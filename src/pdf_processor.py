@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict
 import pypdf
 
 from src.text_cleaner import clean_text_for_textaloud, remove_headers_footers_and_page_numbers
+from src.audio_generator import generate_audio_from_text, DEFAULT_VOICE
 
 # Regex patterns for chapter headers
 CHAPTER_PATTERNS = [
@@ -57,7 +58,6 @@ def detect_chapters(full_text: str) -> List[Tuple[str, str]]:
         match = combined_pattern.match(stripped) if stripped else None
 
         if match:
-            # Found chapter title or symbol divider
             if current_lines:
                 content = '\n'.join(current_lines).strip()
                 if content:
@@ -90,25 +90,25 @@ def process_pdf_to_audiobook_txt(
     clean_dialogues: bool = True,
     merge_paragraphs: bool = True,
     remove_headers_footers: bool = True,
+    generate_audio: bool = False,
+    voice_id: str = DEFAULT_VOICE,
     progress_callback = None
 ) -> Dict[str, List[str]]:
     """
-    Main pipeline to process a PDF file and produce cleaned .txt files ready for TextAloud.
+    Main pipeline to process a PDF file and produce cleaned .txt and optional .mp3 files.
     Stores files in a dedicated folder for the book.
-    Returns dictionary with summary info: {"folder": book_folder, "files": list_of_created_filepaths}
+    Returns dictionary with summary info: {"folder": book_folder, "txt_files": [...], "audio_files": [...]}
     """
     if progress_callback:
         progress_callback("Leyendo archivo PDF...", 10)
 
-    # 1. Extract raw pages
     raw_pages = extract_pages_from_pdf(pdf_path)
     if not raw_pages or not "".join(raw_pages).strip():
         raise ValueError("No se pudo extraer texto del PDF (el archivo podría ser solo imágenes o estar protegido).")
 
     if progress_callback:
-        progress_callback("Eliminando encabezados, pies de página y números de página...", 30)
+        progress_callback("Eliminando encabezados, pies de página y números de página...", 25)
 
-    # 2. Remove headers / footers / page numbers
     if remove_headers_footers:
         cleaned_pages = remove_headers_footers_and_page_numbers(raw_pages)
     else:
@@ -117,26 +117,26 @@ def process_pdf_to_audiobook_txt(
     full_text = "\n\n".join(cleaned_pages)
 
     if progress_callback:
-        progress_callback("Detectando y separando capítulos...", 50)
+        progress_callback("Detectando y separando capítulos...", 40)
 
-    # 3. Detect chapters first to prevent chapter headers from merging with body text
     if split_chapters:
         raw_chapters = detect_chapters(full_text)
     else:
         raw_chapters = [("Libro Completo", full_text)]
 
     if progress_callback:
-        progress_callback("Limpiando y formateando texto...", 70)
+        progress_callback("Limpiando y formateando texto...", 55)
 
-    # 4. Prepare dedicated output directory
     book_name = os.path.splitext(os.path.basename(pdf_path))[0]
     safe_book_folder_name = sanitize_filename(book_name)
     book_output_dir = os.path.join(output_base_dir, safe_book_folder_name)
     os.makedirs(book_output_dir, exist_ok=True)
 
-    created_files = []
+    created_txt_files = []
+    created_audio_files = []
 
-    # 5. Clean each chapter's content individually and write to file
+    total_chapters = len(raw_chapters)
+
     for idx, (title, content) in enumerate(raw_chapters, 1):
         cleaned_content = clean_text_for_textaloud(
             content,
@@ -147,22 +147,35 @@ def process_pdf_to_audiobook_txt(
 
         if split_chapters:
             title_clean = sanitize_filename(title)
-            filename = f"{idx:02d}_{title_clean}.txt"
-            filepath = os.path.join(book_output_dir, filename)
-            with open(filepath, 'w', encoding='utf-8') as f:
+            base_filename = f"{idx:02d}_{title_clean}"
+            txt_filepath = os.path.join(book_output_dir, f"{base_filename}.txt")
+            with open(txt_filepath, 'w', encoding='utf-8') as f:
                 f.write(f"{title}\n\n{cleaned_content}\n")
         else:
-            filename = f"{safe_book_folder_name}_completo.txt"
-            filepath = os.path.join(book_output_dir, filename)
-            with open(filepath, 'w', encoding='utf-8') as f:
+            base_filename = f"{safe_book_folder_name}_completo"
+            txt_filepath = os.path.join(book_output_dir, f"{base_filename}.txt")
+            with open(txt_filepath, 'w', encoding='utf-8') as f:
                 f.write(cleaned_content + "\n")
 
-        created_files.append(filepath)
+        created_txt_files.append(txt_filepath)
+
+        if generate_audio:
+            if progress_callback:
+                pct = 60 + int((idx / total_chapters) * 35)
+                progress_callback(f"Generando audio ({idx}/{total_chapters}): {title}...", pct)
+
+            mp3_filepath = os.path.join(book_output_dir, f"{base_filename}.mp3")
+            # Text to read includes chapter title + body text
+            read_text = f"{title}.\n\n{cleaned_content}"
+            generate_audio_from_text(read_text, mp3_filepath, voice=voice_id)
+            created_audio_files.append(mp3_filepath)
 
     if progress_callback:
         progress_callback("¡Proceso completado!", 100)
 
     return {
         "folder": book_output_dir,
-        "files": created_files
+        "files": created_txt_files + created_audio_files,
+        "txt_files": created_txt_files,
+        "audio_files": created_audio_files
     }

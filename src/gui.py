@@ -6,14 +6,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from src.pdf_processor import process_pdf_to_audiobook_txt
+from src.audio_generator import SPANISH_VOICES, DEFAULT_VOICE
 
 
 class AudiobookConverterGUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Convertidor de PDF a AudioTexto para TextAloud")
-        self.geometry("680x580")
-        self.minsize(600, 500)
+        self.title("Convertidor de PDF a AudioTexto y Audiolibro")
+        self.geometry("700x650")
+        self.minsize(620, 550)
 
         # Apply a clean theme
         self.style = ttk.Style(self)
@@ -30,6 +31,10 @@ class AudiobookConverterGUI(tk.Tk):
         self.merge_paragraphs_var = tk.BooleanVar(value=True)
         self.remove_headers_var = tk.BooleanVar(value=True)
 
+        # Audio options
+        self.generate_audio_var = tk.BooleanVar(value=False)
+        self.selected_voice_display = tk.StringVar(value=list(SPANISH_VOICES.keys())[0])
+
         self.event_queue = queue.Queue()
 
         self._create_widgets()
@@ -43,16 +48,16 @@ class AudiobookConverterGUI(tk.Tk):
         # Title / Description
         title_label = ttk.Label(
             main_frame,
-            text="Convertidor de PDF a AudioTexto (TextAloud)",
+            text="Convertidor de PDF a AudioTexto y Audiolibro MP3",
             font=("Helvetica", 14, "bold")
         )
         title_label.pack(anchor=tk.W, pady=(0, 5))
 
         desc_label = ttk.Label(
             main_frame,
-            text="Limpia guiones de diálogo, sangrías, encabezados y prepara el texto para una lectura fluida en TextAloud.",
+            text="Limpia guiones de diálogo, sangrías y encabezados. Genera archivos .txt para TextAloud y opcionalmente audiolibros .mp3 con voz neuronal.",
             font=("Helvetica", 9),
-            wraplength=620
+            wraplength=640
         )
         desc_label.pack(anchor=tk.W, pady=(0, 15))
 
@@ -77,12 +82,12 @@ class AudiobookConverterGUI(tk.Tk):
         file_frame.columnconfigure(1, weight=1)
 
         # Options Section
-        options_frame = ttk.LabelFrame(main_frame, text=" Opciones de Procesamiento ", padding="10 10 10 10")
+        options_frame = ttk.LabelFrame(main_frame, text=" Opciones de Texto ", padding="10 10 10 10")
         options_frame.pack(fill=tk.X, pady=(0, 10))
 
         cb_chapters = ttk.Checkbutton(
             options_frame,
-            text="Separar texto por capítulos en archivos individuales (en carpeta reservada del libro)",
+            text="Separar por capítulos en archivos individuales (en carpeta reservada del libro)",
             variable=self.split_chapters_var
         )
         cb_chapters.pack(anchor=tk.W, pady=2)
@@ -115,6 +120,31 @@ class AudiobookConverterGUI(tk.Tk):
         )
         cb_headers.pack(anchor=tk.W, pady=2)
 
+        # Audio Options Section
+        audio_frame = ttk.LabelFrame(main_frame, text=" Opciones de Audio (Generación Directa .mp3) ", padding="10 10 10 10")
+        audio_frame.pack(fill=tk.X, pady=(0, 10))
+
+        cb_audio = ttk.Checkbutton(
+            audio_frame,
+            text="Generar también archivos de audio MP3 usando síntesis de voz neuronal",
+            variable=self.generate_audio_var,
+            command=self._toggle_audio_options
+        )
+        cb_audio.pack(anchor=tk.W, pady=(2, 5))
+
+        voice_row = ttk.Frame(audio_frame)
+        voice_row.pack(fill=tk.X, pady=2)
+
+        ttk.Label(voice_row, text="Voz Narradora:").pack(side=tk.LEFT, padx=(0, 10))
+        self.voice_combo = ttk.Combobox(
+            voice_row,
+            textvariable=self.selected_voice_display,
+            values=list(SPANISH_VOICES.keys()),
+            state="disabled",
+            width=40
+        )
+        self.voice_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Progress Section
         progress_frame = ttk.Frame(main_frame)
         progress_frame.pack(fill=tk.X, pady=(5, 10))
@@ -128,7 +158,7 @@ class AudiobookConverterGUI(tk.Tk):
         # Convert Button
         self.convert_btn = ttk.Button(
             main_frame,
-            text="⚡ Convertir a AudioTexto (.txt)",
+            text="⚡ Convertir Libro",
             command=self._start_conversion
         )
         self.convert_btn.pack(pady=(0, 10), ipady=5, fill=tk.X)
@@ -143,6 +173,12 @@ class AudiobookConverterGUI(tk.Tk):
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
+
+    def _toggle_audio_options(self):
+        if self.generate_audio_var.get():
+            self.voice_combo.config(state="readonly")
+        else:
+            self.voice_combo.config(state="disabled")
 
     def _browse_pdf(self):
         file_path = filedialog.askopenfilename(
@@ -167,7 +203,6 @@ class AudiobookConverterGUI(tk.Tk):
         self._log(f"[{value}%] {status}")
 
     def _check_queue(self):
-        """Processes events queued by background threads in the main Tk thread."""
         while not self.event_queue.empty():
             try:
                 event_type, args = self.event_queue.get_nowait()
@@ -175,8 +210,8 @@ class AudiobookConverterGUI(tk.Tk):
                     status, val = args
                     self._update_progress(status, val)
                 elif event_type == "success":
-                    folder, count = args
-                    self._conversion_success(folder, count)
+                    folder, txt_count, audio_count = args
+                    self._conversion_success(folder, txt_count, audio_count)
                 elif event_type == "error":
                     err_msg = args
                     self._conversion_error(err_msg)
@@ -196,19 +231,23 @@ class AudiobookConverterGUI(tk.Tk):
             messagebox.showerror("Error", "Por favor especifique una carpeta de salida.")
             return
 
+        voice_display = self.selected_voice_display.get()
+        voice_id = SPANISH_VOICES.get(voice_display, DEFAULT_VOICE)
+
         options = {
             "split_chapters": self.split_chapters_var.get(),
             "fix_hyphens": self.fix_hyphens_var.get(),
             "clean_dialogues": self.clean_dialogues_var.get(),
             "merge_paragraphs": self.merge_paragraphs_var.get(),
             "remove_headers_footers": self.remove_headers_var.get(),
+            "generate_audio": self.generate_audio_var.get(),
+            "voice_id": voice_id
         }
 
         self.convert_btn.config(state=tk.DISABLED)
         self.log_text.delete("1.0", tk.END)
         self.progress_bar["value"] = 0
 
-        # Run conversion in background thread
         threading.Thread(target=self._run_conversion_worker, args=(pdf_path, out_dir, options), daemon=True).start()
 
     def _run_conversion_worker(self, pdf_path: str, out_dir: str, options: dict):
@@ -221,22 +260,29 @@ class AudiobookConverterGUI(tk.Tk):
                 clean_dialogues=options["clean_dialogues"],
                 merge_paragraphs=options["merge_paragraphs"],
                 remove_headers_footers=options["remove_headers_footers"],
+                generate_audio=options["generate_audio"],
+                voice_id=options["voice_id"],
                 progress_callback=lambda status, val: self.event_queue.put(("progress", (status, val)))
             )
 
             folder = result["folder"]
-            files = result["files"]
+            txt_files = result["txt_files"]
+            audio_files = result["audio_files"]
 
-            self.event_queue.put(("success", (folder, len(files))))
+            self.event_queue.put(("success", (folder, len(txt_files), len(audio_files))))
         except Exception as e:
             self.event_queue.put(("error", str(e)))
 
-    def _conversion_success(self, folder: str, file_count: int):
+    def _conversion_success(self, folder: str, txt_count: int, audio_count: int):
         self.convert_btn.config(state=tk.NORMAL)
-        self._log(f"\n✅ ¡Éxito! Se crearon {file_count} archivo(s) en la carpeta:\n{folder}")
+        msg_summary = f"Se crearon {txt_count} archivo(s) .txt"
+        if audio_count > 0:
+            msg_summary += f" y {audio_count} archivo(s) de audio .mp3"
+
+        self._log(f"\n✅ ¡Éxito! {msg_summary} en la carpeta:\n{folder}")
         messagebox.showinfo(
             "Conversión Completada",
-            f"Se han generado {file_count} archivo(s) .txt con éxito en:\n\n{folder}"
+            f"{msg_summary} con éxito en:\n\n{folder}"
         )
 
     def _conversion_error(self, err_msg: str):
