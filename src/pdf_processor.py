@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict
 import pypdf
 
 from src.text_cleaner import clean_text_for_textaloud, remove_headers_footers_and_page_numbers
-from src.audio_generator import generate_audio_from_text, DEFAULT_VOICE
+from src.audio_generator import generate_batch_audio, DEFAULT_VOICE
 
 # Regex patterns for chapter headers
 CHAPTER_PATTERNS = [
@@ -92,12 +92,12 @@ def process_pdf_to_audiobook_txt(
     remove_headers_footers: bool = True,
     generate_audio: bool = False,
     voice_id: str = DEFAULT_VOICE,
+    max_audio_concurrency: int = 4,
     progress_callback = None
 ) -> Dict[str, List[str]]:
     """
     Main pipeline to process a PDF file and produce cleaned .txt and optional .mp3 files.
-    Stores files in a dedicated folder for the book.
-    Returns dictionary with summary info: {"folder": book_folder, "txt_files": [...], "audio_files": [...]}
+    Generates audio in parallel for optimal performance.
     """
     if progress_callback:
         progress_callback("Leyendo archivo PDF...", 10)
@@ -133,9 +133,7 @@ def process_pdf_to_audiobook_txt(
     os.makedirs(book_output_dir, exist_ok=True)
 
     created_txt_files = []
-    created_audio_files = []
-
-    total_chapters = len(raw_chapters)
+    audio_tasks = []
 
     for idx, (title, content) in enumerate(raw_chapters, 1):
         cleaned_content = clean_text_for_textaloud(
@@ -160,15 +158,29 @@ def process_pdf_to_audiobook_txt(
         created_txt_files.append(txt_filepath)
 
         if generate_audio:
-            if progress_callback:
-                pct = 60 + int((idx / total_chapters) * 35)
-                progress_callback(f"Generando audio ({idx}/{total_chapters}): {title}...", pct)
-
             mp3_filepath = os.path.join(book_output_dir, f"{base_filename}.mp3")
-            # Text to read includes chapter title + body text
             read_text = f"{title}.\n\n{cleaned_content}"
-            generate_audio_from_text(read_text, mp3_filepath, voice=voice_id)
-            created_audio_files.append(mp3_filepath)
+            audio_tasks.append((read_text, mp3_filepath))
+
+    created_audio_files = []
+    if generate_audio and audio_tasks:
+        total_audio_tasks = len(audio_tasks)
+
+        def batch_progress(done, total):
+            if progress_callback:
+                pct = 60 + int((done / total) * 38)
+                progress_callback(f"Generando audio paralelo ({done}/{total} capítulos)...", pct)
+
+        if progress_callback:
+            progress_callback(f"Iniciando síntesis de audio en paralelo ({total_audio_tasks} capítulos)...", 60)
+
+        generate_batch_audio(
+            items=audio_tasks,
+            voice=voice_id,
+            max_concurrency=max_audio_concurrency,
+            progress_callback=batch_progress
+        )
+        created_audio_files = [path for _, path in audio_tasks]
 
     if progress_callback:
         progress_callback("¡Proceso completado!", 100)
