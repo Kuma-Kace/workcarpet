@@ -1,10 +1,11 @@
 import os
 import re
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 import pypdf
 
 from src.text_cleaner import clean_text_for_textaloud, remove_headers_footers_and_page_numbers
 from src.audio_generator import generate_batch_audio, DEFAULT_VOICE
+from src.textaloud_integration import generate_audio_with_textaloud, find_textaloud_executable
 
 # Regex patterns for chapter headers
 CHAPTER_PATTERNS = [
@@ -91,13 +92,15 @@ def process_pdf_to_audiobook_txt(
     merge_paragraphs: bool = True,
     remove_headers_footers: bool = True,
     generate_audio: bool = False,
+    tts_engine: str = "edge_tts",  # "edge_tts" or "textaloud"
     voice_id: str = DEFAULT_VOICE,
+    ta_exe_path: Optional[str] = None,
     max_audio_concurrency: int = 4,
     progress_callback = None
 ) -> Dict[str, List[str]]:
     """
     Main pipeline to process a PDF file and produce cleaned .txt and optional .mp3 files.
-    Generates audio in parallel for optimal performance.
+    Supports both Edge-TTS and TextAloud engines.
     """
     if progress_callback:
         progress_callback("Leyendo archivo PDF...", 10)
@@ -166,21 +169,38 @@ def process_pdf_to_audiobook_txt(
     if generate_audio and audio_tasks:
         total_audio_tasks = len(audio_tasks)
 
-        def batch_progress(done, total):
+        if tts_engine == "textaloud":
             if progress_callback:
-                pct = 60 + int((done / total) * 38)
-                progress_callback(f"Generando audio paralelo ({done}/{total} capítulos)...", pct)
+                progress_callback(f"Generando audio con TextAloud ({total_audio_tasks} capítulos)...", 60)
 
-        if progress_callback:
-            progress_callback(f"Iniciando síntesis de audio en paralelo ({total_audio_tasks} capítulos)...", 60)
+            for idx, (read_text, mp3_path) in enumerate(audio_tasks, 1):
+                if progress_callback:
+                    pct = 60 + int((idx / total_audio_tasks) * 38)
+                    progress_callback(f"Generando audio TextAloud ({idx}/{total_audio_tasks})...", pct)
 
-        generate_batch_audio(
-            items=audio_tasks,
-            voice=voice_id,
-            max_concurrency=max_audio_concurrency,
-            progress_callback=batch_progress
-        )
-        created_audio_files = [path for _, path in audio_tasks]
+                generate_audio_with_textaloud(
+                    text=read_text,
+                    output_audio_path=mp3_path,
+                    ta_executable_path=ta_exe_path,
+                    voice_name=voice_id
+                )
+                created_audio_files.append(mp3_path)
+        else:
+            def batch_progress(done, total):
+                if progress_callback:
+                    pct = 60 + int((done / total) * 38)
+                    progress_callback(f"Generando audio neuronal ({done}/{total} capítulos)...", pct)
+
+            if progress_callback:
+                progress_callback(f"Iniciando síntesis de audio en paralelo ({total_audio_tasks} capítulos)...", 60)
+
+            generate_batch_audio(
+                items=audio_tasks,
+                voice=voice_id,
+                max_concurrency=max_audio_concurrency,
+                progress_callback=batch_progress
+            )
+            created_audio_files = [path for _, path in audio_tasks]
 
     if progress_callback:
         progress_callback("¡Proceso completado!", 100)

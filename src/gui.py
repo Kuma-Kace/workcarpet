@@ -7,14 +7,15 @@ from tkinter import ttk, filedialog, messagebox
 
 from src.pdf_processor import process_pdf_to_audiobook_txt
 from src.audio_generator import SPANISH_VOICES, DEFAULT_VOICE
+from src.textaloud_integration import find_textaloud_executable, get_installed_sapi5_voices
 
 
 class AudiobookConverterGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Convertidor de PDF a AudioTexto y Audiolibro")
-        self.geometry("700x650")
-        self.minsize(620, 550)
+        self.geometry("740x720")
+        self.minsize(640, 600)
 
         # Apply a clean theme
         self.style = ttk.Style(self)
@@ -33,7 +34,13 @@ class AudiobookConverterGUI(tk.Tk):
 
         # Audio options
         self.generate_audio_var = tk.BooleanVar(value=False)
+        self.tts_engine_var = tk.StringVar(value="edge_tts")  # "edge_tts" or "textaloud"
         self.selected_voice_display = tk.StringVar(value=list(SPANISH_VOICES.keys())[0])
+
+        # TextAloud options
+        detected_ta = find_textaloud_executable() or ""
+        self.textaloud_path_var = tk.StringVar(value=detected_ta)
+        self.ta_sapi_voices = get_installed_sapi5_voices()
 
         self.event_queue = queue.Queue()
 
@@ -41,38 +48,34 @@ class AudiobookConverterGUI(tk.Tk):
         self._check_queue()
 
     def _create_widgets(self):
-        # Main Frame
         main_frame = ttk.Frame(self, padding="15 15 15 15")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Title / Description
         title_label = ttk.Label(
             main_frame,
-            text="Convertidor de PDF a AudioTexto y Audiolibro MP3",
+            text="Convertidor de PDF a AudioTexto y Audiolibro",
             font=("Helvetica", 14, "bold")
         )
         title_label.pack(anchor=tk.W, pady=(0, 5))
 
         desc_label = ttk.Label(
             main_frame,
-            text="Limpia guiones de diálogo, sangrías y encabezados. Genera archivos .txt para TextAloud y opcionalmente audiolibros .mp3 con voz neuronal.",
+            text="Limpia guiones de diálogo, sangrías y encabezados. Genera .txt y audiolibros .mp3 mediante Voces Neuronales o integración directa con TextAloud.",
             font=("Helvetica", 9),
-            wraplength=640
+            wraplength=680
         )
         desc_label.pack(anchor=tk.W, pady=(0, 15))
 
-        # File Selection Section
+        # Files Section
         file_frame = ttk.LabelFrame(main_frame, text=" Archivos y Directorios ", padding="10 10 10 10")
         file_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # PDF input row
         ttk.Label(file_frame, text="Archivo PDF:").grid(row=0, column=0, sticky=tk.W, pady=5)
         pdf_entry = ttk.Entry(file_frame, textvariable=self.pdf_file_path, width=50)
         pdf_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
         browse_pdf_btn = ttk.Button(file_frame, text="Examinar...", command=self._browse_pdf)
         browse_pdf_btn.grid(row=0, column=2, pady=5)
 
-        # Output folder row
         ttk.Label(file_frame, text="Carpeta de Salida:").grid(row=1, column=0, sticky=tk.W, pady=5)
         out_entry = ttk.Entry(file_frame, textvariable=self.output_dir_path, width=50)
         out_entry.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=5)
@@ -81,59 +84,81 @@ class AudiobookConverterGUI(tk.Tk):
 
         file_frame.columnconfigure(1, weight=1)
 
-        # Options Section
+        # Text Options Section
         options_frame = ttk.LabelFrame(main_frame, text=" Opciones de Texto ", padding="10 10 10 10")
         options_frame.pack(fill=tk.X, pady=(0, 10))
 
-        cb_chapters = ttk.Checkbutton(
+        ttk.Checkbutton(
             options_frame,
             text="Separar por capítulos en archivos individuales (en carpeta reservada del libro)",
             variable=self.split_chapters_var
-        )
-        cb_chapters.pack(anchor=tk.W, pady=2)
+        ).pack(anchor=tk.W, pady=2)
 
-        cb_dialogues = ttk.Checkbutton(
+        ttk.Checkbutton(
             options_frame,
             text="Eliminar guiones de diálogo iniciales y convertir acotaciones en pausas naturales (comas)",
             variable=self.clean_dialogues_var
-        )
-        cb_dialogues.pack(anchor=tk.W, pady=2)
+        ).pack(anchor=tk.W, pady=2)
 
-        cb_paragraphs = ttk.Checkbutton(
+        ttk.Checkbutton(
             options_frame,
             text="Unificar párrafos y eliminar sangrías/saltos de línea innecesarios",
             variable=self.merge_paragraphs_var
-        )
-        cb_paragraphs.pack(anchor=tk.W, pady=2)
+        ).pack(anchor=tk.W, pady=2)
 
-        cb_hyphens = ttk.Checkbutton(
+        ttk.Checkbutton(
             options_frame,
             text="Unir palabras divididas por guion al final de línea (ej. progra-ma -> programa)",
             variable=self.fix_hyphens_var
-        )
-        cb_hyphens.pack(anchor=tk.W, pady=2)
+        ).pack(anchor=tk.W, pady=2)
 
-        cb_headers = ttk.Checkbutton(
+        ttk.Checkbutton(
             options_frame,
             text="Detectar y eliminar encabezados, pies de página y números de página",
             variable=self.remove_headers_var
-        )
-        cb_headers.pack(anchor=tk.W, pady=2)
+        ).pack(anchor=tk.W, pady=2)
 
-        # Audio Options Section
-        audio_frame = ttk.LabelFrame(main_frame, text=" Opciones de Audio (Generación Directa .mp3) ", padding="10 10 10 10")
+        # Audio Generation & TextAloud Options
+        audio_frame = ttk.LabelFrame(main_frame, text=" Opciones de Audio (Síntesis / TextAloud) ", padding="10 10 10 10")
         audio_frame.pack(fill=tk.X, pady=(0, 10))
 
         cb_audio = ttk.Checkbutton(
             audio_frame,
-            text="Generar también archivos de audio MP3 usando síntesis de voz neuronal",
+            text="Generar también archivos de audio MP3",
             variable=self.generate_audio_var,
             command=self._toggle_audio_options
         )
         cb_audio.pack(anchor=tk.W, pady=(2, 5))
 
+        # Motor de voz Selection
+        engine_row = ttk.Frame(audio_frame)
+        engine_row.pack(fill=tk.X, pady=2)
+
+        ttk.Label(engine_row, text="Motor de Voz:").pack(side=tk.LEFT, padx=(0, 10))
+
+        self.rb_edge = ttk.Radiobutton(
+            engine_row,
+            text="Voces Neuronales (Integrado)",
+            variable=self.tts_engine_var,
+            value="edge_tts",
+            command=self._on_engine_change,
+            state="disabled"
+        )
+        self.rb_edge.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.rb_ta = ttk.Radiobutton(
+            engine_row,
+            text="TextAloud (Instalado en Windows)",
+            variable=self.tts_engine_var,
+            value="textaloud",
+            command=self._on_engine_change,
+            state="disabled"
+        )
+        self.rb_ta.pack(side=tk.LEFT)
+
+        # Voice Selector Row
         voice_row = ttk.Frame(audio_frame)
-        voice_row.pack(fill=tk.X, pady=2)
+        voice_row.pack(fill=tk.X, pady=5)
 
         ttk.Label(voice_row, text="Voz Narradora:").pack(side=tk.LEFT, padx=(0, 10))
         self.voice_combo = ttk.Combobox(
@@ -141,9 +166,17 @@ class AudiobookConverterGUI(tk.Tk):
             textvariable=self.selected_voice_display,
             values=list(SPANISH_VOICES.keys()),
             state="disabled",
-            width=40
+            width=42
         )
         self.voice_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # TextAloud Path Row
+        self.ta_path_frame = ttk.Frame(audio_frame)
+        ttk.Label(self.ta_path_frame, text="Ruta TextAloud (TACommand.exe):").pack(side=tk.LEFT, padx=(0, 5))
+        self.ta_entry = ttk.Entry(self.ta_path_frame, textvariable=self.textaloud_path_var, width=35)
+        self.ta_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        browse_ta_btn = ttk.Button(self.ta_path_frame, text="Buscar...", command=self._browse_textaloud_exe)
+        browse_ta_btn.pack(side=tk.LEFT)
 
         # Progress Section
         progress_frame = ttk.Frame(main_frame)
@@ -167,7 +200,7 @@ class AudiobookConverterGUI(tk.Tk):
         log_frame = ttk.LabelFrame(main_frame, text=" Registro de Procesamiento ", padding="5 5 5 5")
         log_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=8, font=("Consolas", 8))
+        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=7, font=("Consolas", 8))
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
@@ -175,10 +208,38 @@ class AudiobookConverterGUI(tk.Tk):
         self.log_text.config(yscrollcommand=scrollbar.set)
 
     def _toggle_audio_options(self):
-        if self.generate_audio_var.get():
-            self.voice_combo.config(state="readonly")
+        enabled = self.generate_audio_var.get()
+        state = "normal" if enabled else "disabled"
+        self.rb_edge.config(state=state)
+        self.rb_ta.config(state=state)
+
+        if enabled:
+            self._on_engine_change()
         else:
             self.voice_combo.config(state="disabled")
+            self.ta_path_frame.pack_forget()
+
+    def _on_engine_change(self):
+        engine = self.tts_engine_var.get()
+        if engine == "edge_tts":
+            self.voice_combo.config(values=list(SPANISH_VOICES.keys()), state="readonly")
+            if self.selected_voice_display.get() not in SPANISH_VOICES:
+                self.selected_voice_display.set(list(SPANISH_VOICES.keys())[0])
+            self.ta_path_frame.pack_forget()
+        else:
+            voices = self.ta_sapi_voices if self.ta_sapi_voices else ["Voz por defecto de TextAloud"]
+            self.voice_combo.config(values=voices, state="readonly")
+            if self.selected_voice_display.get() not in voices:
+                self.selected_voice_display.set(voices[0])
+            self.ta_path_frame.pack(fill=tk.X, pady=(5, 0))
+
+    def _browse_textaloud_exe(self):
+        path = filedialog.askopenfilename(
+            title="Seleccionar ejecutable de TextAloud (TACommand.exe)",
+            filetypes=[("Ejecutables", "*.exe"), ("Todos los archivos", "*.*")]
+        )
+        if path:
+            self.textaloud_path_var.set(path)
 
     def _browse_pdf(self):
         file_path = filedialog.askopenfilename(
@@ -231,8 +292,13 @@ class AudiobookConverterGUI(tk.Tk):
             messagebox.showerror("Error", "Por favor especifique una carpeta de salida.")
             return
 
+        engine = self.tts_engine_var.get()
         voice_display = self.selected_voice_display.get()
-        voice_id = SPANISH_VOICES.get(voice_display, DEFAULT_VOICE)
+
+        if engine == "edge_tts":
+            voice_id = SPANISH_VOICES.get(voice_display, DEFAULT_VOICE)
+        else:
+            voice_id = voice_display if voice_display != "Voz por defecto de TextAloud" else None
 
         options = {
             "split_chapters": self.split_chapters_var.get(),
@@ -241,7 +307,9 @@ class AudiobookConverterGUI(tk.Tk):
             "merge_paragraphs": self.merge_paragraphs_var.get(),
             "remove_headers_footers": self.remove_headers_var.get(),
             "generate_audio": self.generate_audio_var.get(),
-            "voice_id": voice_id
+            "tts_engine": engine,
+            "voice_id": voice_id,
+            "ta_exe_path": self.textaloud_path_var.get().strip() or None
         }
 
         self.convert_btn.config(state=tk.DISABLED)
@@ -261,7 +329,9 @@ class AudiobookConverterGUI(tk.Tk):
                 merge_paragraphs=options["merge_paragraphs"],
                 remove_headers_footers=options["remove_headers_footers"],
                 generate_audio=options["generate_audio"],
+                tts_engine=options["tts_engine"],
                 voice_id=options["voice_id"],
+                ta_exe_path=options["ta_exe_path"],
                 progress_callback=lambda status, val: self.event_queue.put(("progress", (status, val)))
             )
 
