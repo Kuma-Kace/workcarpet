@@ -21,17 +21,14 @@ class TestTextCleaner(unittest.TestCase):
         self.assertEqual(fix_hyphenated_words(text_emdash), expected_emdash)
 
     def test_clean_dialogue_dashes(self):
-        # Opening dialogue dash
         text1 = "— Hola, ¿cómo estás?"
         self.assertEqual(clean_dialogue_dashes(text1), "Hola, ¿cómo estás?")
 
-        # Dialogue with double dash narrator incise
         text2 = "—Hola —dijo Juan—, pasa por favor."
         cleaned2 = clean_dialogue_dashes(text2)
         self.assertNotIn("—", cleaned2)
         self.assertEqual(cleaned2, "Hola, dijo Juan, pasa por favor.")
 
-        # Single dash at end of sentence
         text3 = "—Hola —dijo María."
         cleaned3 = clean_dialogue_dashes(text3)
         self.assertNotIn("—", cleaned3)
@@ -54,8 +51,23 @@ class TestTextCleaner(unittest.TestCase):
             self.assertNotIn("Editorial Castalia", page)
             self.assertNotIn("Página", page)
 
-    def test_detect_chapters(self):
-        text = "Capítulo I\nHabía una vez un hidalgo.\n\nCapítulo II\nLas aventuras del hidalgo."
+    def test_detect_chapters_enhanced(self):
+        text = (
+            "*** CAPÍTULO I ***\nHabía una vez un hidalgo que vivía en la Mancha en un lugar lejano.\n\n"
+            "~ CAPÍTULO SEGUNDO ~\nOtras aventuras maravillosas sucedieron después de este evento.\n\n"
+            "❖ ❖ ❖\nUn nuevo episodio comenzó pronto en la aldea vecina."
+        )
+        chapters = detect_chapters(text)
+        self.assertEqual(len(chapters), 3)
+        self.assertEqual(chapters[0][0], "CAPÍTULO I")
+        self.assertEqual(chapters[1][0], "CAPÍTULO SEGUNDO")
+        self.assertTrue(chapters[2][0].startswith("Capítulo"))
+
+    def test_detect_chapters_isolated_numbers(self):
+        text = (
+            "- I -\nEl primer gran acontecimiento tomó lugar durante una tarde de verano pacífica.\n\n"
+            "- II -\nEl segundo hito ocurrió poco después sin que nadie lo esperara en la aldea."
+        )
         chapters = detect_chapters(text)
         self.assertEqual(len(chapters), 2)
         self.assertEqual(chapters[0][0], "Capítulo I")

@@ -7,25 +7,32 @@ from src.text_cleaner import clean_text_for_textaloud, remove_headers_footers_an
 from src.audio_generator import generate_batch_audio, DEFAULT_VOICE
 from src.textaloud_integration import generate_audio_with_textaloud, find_textaloud_executable
 
-# Regex patterns for chapter headers
+# Expanded regex patterns for robust chapter detection in Spanish and English
 CHAPTER_PATTERNS = [
-    r'^(cap[íi]tulo\s+[\dIVXLCDM]+.*)$',
-    r'^(chapter\s+[\dIVXLCDM]+.*)$',
-    r'^(pr[óo]logo.*)$',
-    r'^(ep[íi]logo.*)$',
-    r'^(introducci[óo]n.*)$',
-    r'^(prefacio.*)$',
-    r'^(secci[óo]n\s+[\dIVXLCDM]+.*)$',
-    r'^([\dIVXLCDM]+\b\s*[-–—:]?\s*[A-ZÁÉÍÓÚÑ].*)$',
-    r'^([★*✦♦❖§~=─-]{3,})$',  # Decorative symbols representing chapter breaks
+    # Explicit "Capítulo 1", "CAPÍTULO I", "Capítulo Primero", etc., with optional surrounding symbols
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(cap[íi]tulo\s+([\dIVXLCDM]+|primero|segundo|tercero|cuarto|quinto|sexto|s[eé]ptimo|octavo|noveno|d[eé]cimo|uno|dos|tres|cuatro|cinco).*?)[#*~_\-=─—–§♦❖★✦•\s]*$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(chapter\s+([\dIVXLCDM]+|one|two|three|four|five|six|seven|eight|nine|ten).*?)[#*~_\-=─—–§♦❖★✦•\s]*$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(pr[óo]logo|prologue).*?$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(ep[íi]logo|epilogue).*?$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(introducci[óo]n|introduction).*?$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(prefacio|preface).*?$',
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*(secci[óo]n\s+[\dIVXLCDM]+|section\s+[\dIVXLCDM]+).*?$',
+    # Roman numeral alone or surrounded by symbols on an isolated line: "I", "IV", "- I -", "~ III ~", "*** IV ***"
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*\b([IVXLCDM]{1,8})\b[#*~_\-=─—–§♦❖★✦•\s]*$',
+    # Number alone or surrounded by symbols on an isolated line: "1", "01", "- 1 -", "~ 2 ~"
+    r'^[#*~_\-=─—–§♦❖★✦•\s]*\b(\d{1,3})\b[#*~_\-=─—–§♦❖★✦•\s]*$',
+    # Number followed by chapter title: "1. EL COMIENZO", "I - LA LLEGADA"
+    r'^([\dIVXLCDM]{1,6}\s*[-–—:.]\s*[A-ZÁÉÍÓÚÑ"“«].*)$',
+    # Repeated decorative divider line (representing chapter or section breaks)
+    r'^([★*✦♦❖§~=─\-–—•#._\s]{3,})$',
 ]
 
 def sanitize_filename(filename: str) -> str:
     """
     Sanitizes title strings to create safe filenames.
-    Removes invalid characters and inverted question/exclamation marks.
+    Removes invalid characters, punctuation artifacts, and inverted question/exclamation marks.
     """
-    s = re.sub(r'[\\/*?:"<>|¿¡]', "", filename)
+    s = re.sub(r'[\\/*?:"<>|¿¡#*~_\-=─—–§♦❖★✦•.]', " ", filename)
     s = re.sub(r'\s+', '_', s.strip())
     return s[:60] if s else "Capitulo"
 
@@ -33,18 +40,22 @@ def sanitize_filename(filename: str) -> str:
 def extract_pages_from_pdf(pdf_path: str) -> List[str]:
     """
     Extracts raw text from each page of a PDF file using pypdf.
+    Filters out non-printable ASCII noise and image binary artifacts.
     """
     reader = pypdf.PdfReader(pdf_path)
     pages = []
     for page in reader.pages:
         text = page.extract_text() or ""
+        # Remove non-printable binary artifacts or control characters except newlines/tabs
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
         pages.append(text)
     return pages
 
 
 def detect_chapters(full_text: str) -> List[Tuple[str, str]]:
     """
-    Splits full text into chapters based on header patterns or decorative symbols.
+    Splits full text into chapters based on header patterns, Roman/Arabic numbers, or decorative symbols.
+    Filters out empty or noise chapter segments.
     Returns list of tuples: (chapter_title, chapter_content)
     """
     lines = full_text.split('\n')
@@ -52,29 +63,44 @@ def detect_chapters(full_text: str) -> List[Tuple[str, str]]:
     current_title = "Inicio / Introducción"
     current_lines = []
 
-    combined_pattern = re.compile('|'.join(CHAPTER_PATTERNS), re.IGNORECASE)
+    compiled_patterns = [re.compile(p, re.IGNORECASE) for p in CHAPTER_PATTERNS]
 
     for line in lines:
         stripped = line.strip()
-        match = combined_pattern.match(stripped) if stripped else None
+        if not stripped:
+            current_lines.append(line)
+            continue
 
-        if match:
-            if current_lines:
-                content = '\n'.join(current_lines).strip()
-                if content:
-                    chapters.append((current_title, content))
+        matched_title = None
+        for pattern in compiled_patterns:
+            m = pattern.match(stripped)
+            if m:
+                matched_title = stripped
+                break
+
+        if matched_title:
+            content = '\n'.join(current_lines).strip()
+            content_cleaned = re.sub(r'[^\w\s]', '', content)
+            if len(content_cleaned) > 20:
+                chapters.append((current_title, content))
+                current_lines = []
+            elif not chapters:
                 current_lines = []
 
-            if re.match(r'^([★*✦♦❖§~=─-]{3,})$', stripped):
+            clean_t = re.sub(r'^[#*~_\-=─—–§♦❖★✦•\s]+|[#*~_\-=─—–§♦❖★✦•\s]+$', '', matched_title)
+            if not clean_t or re.match(r'^([★*✦♦❖§~=─\-–—•#._\s]{3,})$', clean_t):
                 current_title = f"Capítulo {len(chapters) + 1}"
+            elif re.match(r'^(?:[IVXLCDM]+|\d+)$', clean_t, re.IGNORECASE):
+                current_title = f"Capítulo {clean_t.upper()}"
             else:
-                current_title = stripped.strip()
+                current_title = clean_t.strip()
         else:
             current_lines.append(line)
 
     if current_lines:
         content = '\n'.join(current_lines).strip()
-        if content:
+        content_cleaned = re.sub(r'[^\w\s]', '', content)
+        if len(content_cleaned) > 20 or not chapters:
             chapters.append((current_title, content))
 
     if not chapters:
